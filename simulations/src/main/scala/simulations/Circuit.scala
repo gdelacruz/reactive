@@ -7,7 +7,7 @@ class Wire {
   private var actions: List[Simulator#Action] = List()
 
   def getSignal: Boolean = sigVal
-  
+
   def setSignal(s: Boolean) {
     if (s != sigVal) {
       sigVal = s
@@ -29,10 +29,11 @@ abstract class CircuitSimulator extends Simulator {
 
   def probe(name: String, wire: Wire) {
     wire addAction {
-      () => afterDelay(0) {
-        println(
-          "  " + currentTime + ": " + name + " -> " +  wire.getSignal)
-      }
+      () =>
+        afterDelay(0) {
+          println(
+            "  " + currentTime + ": " + name + " -> " + wire.getSignal)
+        }
     }
   }
 
@@ -59,15 +60,42 @@ abstract class CircuitSimulator extends Simulator {
   //
 
   def orGate(a1: Wire, a2: Wire, output: Wire) {
-    ???
+    def andAction() {
+      val a1Sig = a1.getSignal
+      val a2Sig = a2.getSignal
+      afterDelay(AndGateDelay) { output.setSignal(a1Sig | a2Sig) }
+    }
+    a1 addAction andAction
+    a2 addAction andAction
   }
-  
+
   def orGate2(a1: Wire, a2: Wire, output: Wire) {
-    ???
+    var nota1, nota2, andOut = new Wire
+    inverter(a1, nota1); inverter(a2, nota2)
+    andGate(nota1, nota2, andOut)
+    inverter(andOut, output)
   }
 
   def demux(in: Wire, c: List[Wire], out: List[Wire]) {
-    ???
+    c match {
+      case Nil =>
+        //A este nivel el out deberia tener 1 solo
+        andGate(in, in, out(0))
+      case x :: xs => {
+        val inL, inR, notX = new Wire
+        val (l, r) = out.splitAt((out.length / 2))
+
+        //Busco la entrada para izquierda 
+        andGate(in, x, inL)
+        //una es negada la otra
+        inverter(x, notX)
+        //Busco la de la derecha
+        andGate(in, notX, inR)
+
+        demux(inL, xs, l)
+        demux(inR, xs, r)
+      }
+    }
   }
 
 }
