@@ -1,4 +1,6 @@
-package week2
+package week2.simulation
+
+import week2.simulation.Gates
 
 abstract class Circuits extends Gates {
   def halfAdder(a: Wire, b: Wire, s: Wire, c: Wire): Unit = {

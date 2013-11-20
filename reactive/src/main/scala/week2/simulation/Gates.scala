@@ -1,4 +1,6 @@
-package week2
+package week2.simulation
+
+import week2.simulation.Simulation
 
 abstract class Gates extends Simulation {
   def InverterDelay: Int

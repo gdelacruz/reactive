@@ -1,4 +1,4 @@
-package week2
+package week2.simulation
 
 trait Simulation {
 
