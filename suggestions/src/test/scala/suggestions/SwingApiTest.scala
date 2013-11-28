@@ -1,11 +1,9 @@
 package suggestions
 
-
-
 import scala.collection._
 import scala.concurrent._
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Try, Success, Failure}
+import scala.util.{ Try, Success, Failure }
 import scala.swing.event.Event
 import scala.swing.Reactions.Reaction
 import rx.lang.scala._
@@ -86,5 +84,36 @@ class SwingApiTest extends FunSuite {
     textField.text = "Turing"
 
     assert(observed == Seq("T", "Tu", "Tur", "Turi", "Turin", "Turing"), observed)
+
+    sub.unsubscribe
+
+    textField.text = "Turing not!"
+
+    assert(observed == Seq("T", "Tu", "Tur", "Turi", "Turin", "Turing"), observed)
   }
+
+  test("SwingApi should emit buttons clicked") {
+    val button = new swingApi.Button
+    val values = button.clicks
+
+    var observed = 0
+    val sub = values subscribe { button =>
+      observed = observed + 1
+    }
+
+    // write some text now
+    button.click
+    button.click
+    button.click
+
+    assert(observed == 3, observed)
+
+    sub.unsubscribe
+
+    button.click
+
+    assert(observed == 3, observed)
+
+  }
+
 }
