@@ -47,68 +47,81 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   var persistent: ActorRef = context.actorOf(persistenceProps)
 
-  var persistenceAcks = Map.empty[Long, (ActorRef, Persist)] //id -> (requester, persist)
+  type Identifier = (String, Long)
 
   case class AckWorkflow(
     key: String,
     id: Long,
     pendingReplicators: Set[ActorRef] = Set(),
     requester: ActorRef,
+    valueOption: Option[String],
     persistenceDone: Boolean = false) {
     val finished: Boolean = persistenceDone && pendingReplicators.isEmpty
-    val identifier = Pair(key, id)
+    val identifier: Identifier = (key, id)
   }
 
-  object AckWorkflow {
-    var pending = Map.empty[(String, Long), AckWorkflow] //(key,id) -> ack
+  object Works {
+    private var pending = Map.empty[Identifier, AckWorkflow] //(key,id) -> ack
 
-    def persistenceDone(key: String, id: Long) {
-      pending.get(key, id).foreach { ack =>
-        checkDone(ack.copy(persistenceDone = true))
-      }
+    def persistenceDone(id: Identifier): AckWorkflow = {
+      val workflow = get(id)
+      val newWorkflow = workflow.copy(persistenceDone = true)
+      pending += workflow.identifier -> newWorkflow
+      newWorkflow
     }
 
-    def replicationDone(key: String, id: Long, replicator: ActorRef) {
-      pending.get(key, id).foreach { ack =>
-        checkDone(ack.copy(pendingReplicators = ack.pendingReplicators - replicator))
-      }
+    def replicationDone(id: Identifier, replicator: ActorRef): AckWorkflow = {
+      val workflow = get(id)
+      val newWorkflow = workflow.copy(pendingReplicators = workflow.pendingReplicators - replicator)
+      pending += workflow.identifier -> newWorkflow
+      newWorkflow
+
     }
 
-    private def checkDone(workflow: AckWorkflow) {
-      if (workflow.finished) {
-        workflow.requester ! OperationAck(workflow.id)
-        pending -= workflow.identifier
-      } else {
-        pending += workflow.identifier -> workflow
-      }
+    def remove(workflow: AckWorkflow) = {
+      pending -= workflow.identifier
     }
 
-    def checkFail(key: String, id: Long) {
-      pending.get((key, id)).foreach { ack =>
-        ack.requester ! OperationFailed(id)
-        pending -= Pair(key, id)
-      }
-    }
-
-    def registerPersistence(key: String, id: Long, requester: ActorRef) {
-      val workflow = get(key, id, requester)
+    def registerPersistence(id: Identifier) = {
+      val workflow = get(id)
       pending += workflow.identifier -> workflow.copy(persistenceDone = false)
+
     }
 
-    def registerReplication(key: String, id: Long, replicator: ActorRef, requester: ActorRef) {
-      val workflow = get(key, id, requester)
+    def registerReplication(id: Identifier, replicator: ActorRef) {
+      val workflow = get(id)
       pending += workflow.identifier -> workflow.copy(pendingReplicators = workflow.pendingReplicators + replicator)
+
     }
 
-    def get(key: String, id: Long, requester: ActorRef): AckWorkflow = {
-      pending.getOrElse((key, id), AckWorkflow(key = key, id = id, requester = requester))
+    def get(id: Identifier): AckWorkflow = {
+      pending(id)
+    }
+
+    def exist(id: Identifier): Boolean = {
+      pending.get(id) match {
+        case Some(_) => true
+        case None => false
+      }
+    }
+
+    def add(key: String, id: Long, valueOption: Option[String], requester: ActorRef): Identifier = {
+      val workflow = pending.getOrElse((key, id), AckWorkflow(key = key, id = id, requester = requester, valueOption = valueOption))
+      pending += workflow.identifier -> workflow
+      workflow.identifier
     }
 
     def removeReplicator(toRemove: ActorRef) {
-      pending.values.foreach { ack =>
-        checkDone(ack.copy(pendingReplicators = ack.pendingReplicators - toRemove))
+      pending.keys.foreach { id =>
+        val workflow = replicationDone(id, toRemove)
+        if (workflow.finished) {
+          workflow.requester ! OperationAck(workflow.id)
+          remove(workflow)
+        }
       }
     }
+
+    def pendings = Works.pending.values.filterNot(_.persistenceDone)
   }
 
   def receive = {
@@ -132,22 +145,38 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
 
     case Persisted(key, id) => {
-      AckWorkflow.persistenceDone(key, id)
+      if (Works.exist((key, id))) {
+        val workflow = Works.persistenceDone((key, id))
+        if (workflow.finished) {
+          workflow.requester ! OperationAck(workflow.id)
+          Works.remove(workflow)
+        }
+      }
     }
 
     case Replicated(key, id) => {
-      AckWorkflow.replicationDone(key, id, sender)
+      if (Works.exist((key, id))) {
+        val workflow = Works.replicationDone((key, id), sender)
+        if (workflow.finished) {
+          workflow.requester ! OperationAck(workflow.id)
+          Works.remove(workflow)
+        }
+      }
     }
 
     case CheckAck(key, id) => {
-      AckWorkflow.checkFail(key, id)
+      if (Works.exist((key, id))) {
+        val workflow = Works.get((key, id))
+        workflow.requester ! OperationFailed(id)
+        Works.remove(workflow)
+      }
     }
 
     case Replicas(replicas) => {
       val added = replicas -- secondaries.keySet - self
       val removed = secondaries.keySet -- replicas
       removed.foreach { r =>
-        AckWorkflow.removeReplicator(secondaries(r))
+        Works.removeReplicator(secondaries(r))
         context stop secondaries(r)
         secondaries -= r
       }
@@ -179,25 +208,34 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     }
 
     case Persisted(key, id) => {
-      persistenceAcks(id)._1 ! SnapshotAck(key, id)
-      persistenceAcks -= id
+      if (Works.exist((key, id))) {
+        val workflow = Works.persistenceDone((key, id))
+        if (workflow.finished) {
+          workflow.requester ! SnapshotAck(key, workflow.id)
+          Works.remove(workflow)
+        }
+      }
     }
-
   }
 
   def replicate(key: String, valueOption: Option[String], id: Long) {
+    val w = Works.add(key, id, valueOption, sender)
+
     secondaries.values.foreach { replicator =>
-      AckWorkflow.registerReplication(key, id, replicator, sender)
+      Works.registerReplication(w, replicator)
       replicator ! Replicate(key, valueOption, id)
     }
-    AckWorkflow.registerPersistence(key, id, sender)
+
     persist(key, valueOption, id)
     context.system.scheduler.scheduleOnce(1 second, self, CheckAck(key, id))
   }
 
   def persist(key: String, valueOption: Option[String], id: Long) {
+    val w = Works.add(key, id, valueOption, sender)
+    Works.registerPersistence(w)
+
     val p = Persist(key, valueOption, id)
-    persistenceAcks += id -> (sender, p)
+
     persistent ! p
   }
 
@@ -211,8 +249,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   override def preStart(): Unit = {
 
     def tryPersist(): Unit = {
-      persistenceAcks.foreach {
-        case (id, (_, p)) => persistent ! p
+      Works.pendings.foreach { w =>
+        persistent ! Persist(w.key, w.valueOption, w.id)
       }
     }
 

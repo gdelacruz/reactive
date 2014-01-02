@@ -6,6 +6,7 @@ import akka.actor.ActorRef
 import scala.concurrent.duration._
 import akka.event.LoggingReceive
 import akka.actor.Cancellable
+import scala.language.postfixOps
 
 object Replicator {
   case class Replicate(key: String, valueOption: Option[String], id: Long)
@@ -32,7 +33,7 @@ class Replicator(val replica: ActorRef) extends Actor {
   var pending = Vector.empty[Snapshot]
 
   var repeaters = Map.empty[Long, Cancellable]
-  
+
   var _seqCounter = 0L
   def nextSeq = {
     val ret = _seqCounter
